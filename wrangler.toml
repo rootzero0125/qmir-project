@@ -1,6 +1,0 @@
-name = "qmir-project"
-pages_build_output_dir = "frontend/dist"
-
-[build]
-command = "cd frontend && npm install && npm run build"
-watch_dir = "frontend"
