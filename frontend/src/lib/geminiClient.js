@@ -1,11 +1,11 @@
 /**
- * Gemini API 연동 모듈 (이미지 OCR + 큐미르 분석)
+ * Gemini API 연동 모듈 (공식 SDK 사용)
  * API Key: VITE_GEMINI_API_KEY 환경 변수에 저장
  */
 
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
-const GEMINI_API_URL =
-  'https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
 
 /**
  * 이미지 파일을 Base64로 변환
@@ -14,7 +14,6 @@ function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onloadend = () => {
-      // "data:image/jpeg;base64,XXXXXX" → "XXXXXX"
       const base64 = reader.result.split(',')[1];
       resolve(base64);
     };
@@ -60,53 +59,31 @@ const QMIR_SYSTEM_PROMPT = `
 `;
 
 /**
- * Gemini API 호출: 이미지 → 큐미르 분석
+ * Gemini 공식 SDK로 이미지 분석 호출
  */
 export async function analyzeImageWithGemini(imageFile) {
-  if (!GEMINI_API_KEY) {
+  if (!apiKey) {
     throw new Error(
       'Gemini API 키가 없습니다. .env 파일에 VITE_GEMINI_API_KEY를 추가하세요.'
     );
   }
 
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
   const base64Image = await fileToBase64(imageFile);
   const mimeType = imageFile.type || 'image/jpeg';
 
-  const requestBody = {
-    contents: [
-      {
-        parts: [
-          { text: QMIR_SYSTEM_PROMPT },
-          {
-            inline_data: {
-              mime_type: mimeType,
-              data: base64Image,
-            },
-          },
-        ],
-      },
-    ],
-    generationConfig: {
-      temperature: 0.3,
-      maxOutputTokens: 2048,
+  const imagePart = {
+    inlineData: {
+      data: base64Image,
+      mimeType: mimeType,
     },
   };
 
-  const response = await fetch(`${GEMINI_API_URL}?key=${GEMINI_API_KEY}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(
-      `Gemini API 오류 (${response.status}): ${errorData?.error?.message || response.statusText}`
-    );
-  }
-
-  const data = await response.json();
-  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const result = await model.generateContent([QMIR_SYSTEM_PROMPT, imagePart]);
+  const response = await result.response;
+  const rawText = response.text();
 
   // JSON 파싱 (마크다운 코드블록 제거)
   const jsonText = rawText.replace(/```json\n?|\n?```/g, '').trim();
