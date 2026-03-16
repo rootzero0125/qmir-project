@@ -59,7 +59,16 @@ const QMIR_SYSTEM_PROMPT = `
 `;
 
 /**
- * Gemini 공식 SDK로 이미지 분석 호출
+ * 사용 가능한 모델 목록 (순서대로 시도)
+ */
+const MODEL_CONFIGS = [
+  { model: 'gemini-2.0-flash', apiVersion: 'v1beta' },
+  { model: 'gemini-1.5-flash', apiVersion: 'v1' },
+  { model: 'gemini-pro-vision', apiVersion: 'v1beta' },
+];
+
+/**
+ * Gemini 공식 SDK로 이미지 분석 호출 (Fallback 포함)
  */
 export async function analyzeImageWithGemini(imageFile) {
   if (!apiKey) {
@@ -69,7 +78,6 @@ export async function analyzeImageWithGemini(imageFile) {
   }
 
   const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
   const base64Image = await fileToBase64(imageFile);
   const mimeType = imageFile.type || 'image/jpeg';
@@ -81,15 +89,36 @@ export async function analyzeImageWithGemini(imageFile) {
     },
   };
 
-  const result = await model.generateContent([QMIR_SYSTEM_PROMPT, imagePart]);
-  const response = await result.response;
-  const rawText = response.text();
+  let lastError = null;
 
-  // JSON 파싱 (마크다운 코드블록 제거)
-  const jsonText = rawText.replace(/```json\n?|\n?```/g, '').trim();
-  try {
-    return JSON.parse(jsonText);
-  } catch {
-    throw new Error(`AI 응답을 파싱할 수 없습니다: ${rawText.slice(0, 200)}`);
+  for (const config of MODEL_CONFIGS) {
+    try {
+      const model = genAI.getGenerativeModel(
+        { model: config.model },
+        { apiVersion: config.apiVersion }
+      );
+
+      const result = await model.generateContent([QMIR_SYSTEM_PROMPT, imagePart]);
+      const response = await result.response;
+      const rawText = response.text();
+
+      // JSON 파싱 (마크다운 코드블록 제거)
+      const jsonText = rawText.replace(/```json\n?|\n?```/g, '').trim();
+      return JSON.parse(jsonText);
+
+    } catch (err) {
+      lastError = err;
+      // 404 또는 모델 미지원 에러면 다음 모델로 시도
+      if (err.message?.includes('404') || err.message?.includes('not found') || err.message?.includes('not supported')) {
+        console.warn(`모델 ${config.model} (${config.apiVersion}) 사용 불가, 다음 모델 시도...`);
+        continue;
+      }
+      // 다른 에러 (429 등)는 그대로 throw
+      throw err;
+    }
   }
+
+  throw new Error(
+    `사용 가능한 Gemini 모델을 찾지 못했습니다. 마지막 오류: ${lastError?.message || '알 수 없는 오류'}`
+  );
 }
