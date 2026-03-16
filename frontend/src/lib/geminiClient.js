@@ -5,7 +5,7 @@
 
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
 const GEMINI_API_URL =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
+  'https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent';
 
 /**
  * 이미지 파일을 Base64로 변환
