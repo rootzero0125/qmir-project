@@ -1,11 +1,19 @@
 /**
- * Gemini API 연동 모듈 (공식 SDK 사용)
+ * Gemini API 연동 모듈 (직접 fetch 호출 — URL 완전 제어)
  * API Key: VITE_GEMINI_API_KEY 환경 변수에 저장
  */
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
 
-const apiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
+/**
+ * 사용 가능한 모델 엔드포인트 (순서대로 시도)
+ */
+const ENDPOINTS = [
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent',
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',
+  'https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent',
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent',
+];
 
 /**
  * 이미지 파일을 Base64로 변환
@@ -59,48 +67,69 @@ const QMIR_SYSTEM_PROMPT = `
 `;
 
 /**
- * 사용 가능한 모델 목록 (순서대로 시도)
- */
-const MODEL_CONFIGS = [
-  { model: 'gemini-2.0-flash', apiVersion: 'v1beta' },
-  { model: 'gemini-1.5-flash', apiVersion: 'v1' },
-  { model: 'gemini-pro-vision', apiVersion: 'v1beta' },
-];
-
-/**
- * Gemini 공식 SDK로 이미지 분석 호출 (Fallback 포함)
+ * Gemini API 호출 (직접 fetch — 모델 Fallback 포함)
  */
 export async function analyzeImageWithGemini(imageFile) {
-  if (!apiKey) {
+  if (!GEMINI_API_KEY) {
     throw new Error(
       'Gemini API 키가 없습니다. .env 파일에 VITE_GEMINI_API_KEY를 추가하세요.'
     );
   }
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-
   const base64Image = await fileToBase64(imageFile);
   const mimeType = imageFile.type || 'image/jpeg';
 
-  const imagePart = {
-    inlineData: {
-      data: base64Image,
-      mimeType: mimeType,
+  const requestBody = {
+    contents: [
+      {
+        parts: [
+          { text: QMIR_SYSTEM_PROMPT },
+          {
+            inline_data: {
+              mime_type: mimeType,
+              data: base64Image,
+            },
+          },
+        ],
+      },
+    ],
+    generationConfig: {
+      temperature: 0.3,
+      maxOutputTokens: 2048,
     },
   };
 
   let lastError = null;
 
-  for (const config of MODEL_CONFIGS) {
+  for (const endpoint of ENDPOINTS) {
     try {
-      const model = genAI.getGenerativeModel(
-        { model: config.model },
-        { apiVersion: config.apiVersion }
-      );
+      console.log(`시도 중: ${endpoint}`);
 
-      const result = await model.generateContent([QMIR_SYSTEM_PROMPT, imagePart]);
-      const response = await result.response;
-      const rawText = response.text();
+      const response = await fetch(`${endpoint}?key=${GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      });
+
+      if (response.status === 404) {
+        console.warn(`404: ${endpoint} — 다음 모델 시도...`);
+        continue;
+      }
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errMsg = errorData?.error?.message || response.statusText;
+        // 429 등 다른 에러는 다음 모델로 시도
+        if (response.status === 429) {
+          console.warn(`429 Rate Limit: ${endpoint} — 다음 모델 시도...`);
+          lastError = new Error(`Rate Limit (429): ${errMsg}`);
+          continue;
+        }
+        throw new Error(`Gemini API 오류 (${response.status}): ${errMsg}`);
+      }
+
+      const data = await response.json();
+      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
       // JSON 파싱 (마크다운 코드블록 제거)
       const jsonText = rawText.replace(/```json\n?|\n?```/g, '').trim();
@@ -108,17 +137,14 @@ export async function analyzeImageWithGemini(imageFile) {
 
     } catch (err) {
       lastError = err;
-      // 404 또는 모델 미지원 에러면 다음 모델로 시도
-      if (err.message?.includes('404') || err.message?.includes('not found') || err.message?.includes('not supported')) {
-        console.warn(`모델 ${config.model} (${config.apiVersion}) 사용 불가, 다음 모델 시도...`);
-        continue;
+      if (err.message?.includes('JSON')) {
+        throw err; // JSON 파싱 에러는 모델은 성공했으나 출력 형식 문제
       }
-      // 다른 에러 (429 등)는 그대로 throw
-      throw err;
+      console.warn(`에러 발생: ${err.message}`);
     }
   }
 
   throw new Error(
-    `사용 가능한 Gemini 모델을 찾지 못했습니다. 마지막 오류: ${lastError?.message || '알 수 없는 오류'}`
+    `모든 Gemini 모델에서 실패했습니다. 마지막 오류: ${lastError?.message || '알 수 없는 오류'}`
   );
 }
